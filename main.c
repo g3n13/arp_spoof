@@ -218,6 +218,36 @@ int main(int argc, char* argv[])
                 return -1;
         }
 
+	//receive and parse packet -> get sender's mac
+        while(1)
+        {       
+                res = pcap_next_ex(handle, &header, &r_packet);
+                if (res == 0) continue; 
+                if (res == -1 || res == -2) break;
+                
+                r_ethhdr = (struct ethhdr*)(r_packet);
+                if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
+                {       
+                        memcpy(t_mac, r_ethhdr->ether_shost, 6*sizeof(uint8_t));        //target mac 저장
+                        printf("get target MAC : ");
+                        for(i=0;i<6;i++)
+                        {       
+                                if(i<5) 
+                                        printf("%02x:",(unsigned char)t_mac[i]);
+                                else    
+                                        printf("%02x\n",(unsigned char)t_mac[i]);
+                        }
+                        break;
+                }
+                else    
+                        continue;
+        }
+
+
+	//waiting for packet(ex: ping)....
+	sleep(1)
+
+
 	while(1)
         {
                 res = pcap_next_ex(handle, &header, &r_packet);
@@ -225,13 +255,17 @@ int main(int argc, char* argv[])
                 if (res == -1 || res == -2) break;
 
                 r_ethhdr = (struct ethhdr*)(r_packet);
-
+		
+		
+		if(memcmp(r_ethhdr->ether_shost, s_mac, 6*sizeof(uint8_t)))
+			return 0;
+		
 		//if icmp packet
                 if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0800)		//icmp is in ip packet
                 {
 			struct libnet_ipv4_hdr* r_ip_hdr;
 			r_ip_hdr = (struct libnet_ipv4_hdr*)(r_packet+14);
-			if(ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01)
+			if(ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01 && memcmp(r_ip_hdr->ip_src, sin->sin_addr, 16))
 			{
 				//change mac
 				memcpy(r_ethhdr->ether_shost, mymac, 6*sizeof(uint8_t));
@@ -260,7 +294,7 @@ int main(int argc, char* argv[])
         			}
 			}
 			else
-				
+				continue;
 		}
                 else
                         continue;
