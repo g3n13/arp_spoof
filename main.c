@@ -221,7 +221,11 @@ int main(int argc, char* argv[])
 	//receive and parse packet -> get sender's mac
         while(1)
         {       
-                res = pcap_next_ex(handle, &header, &r_packet);
+		int j;
+		const uint8_t* r_packet;
+		struct pcap_pkthdr* header;
+		struct ethhdr* r_ethhdr;
+                int res = pcap_next_ex(handle, &header, &r_packet);
                 if (res == 0) continue; 
                 if (res == -1 || res == -2) break;
                 
@@ -245,12 +249,16 @@ int main(int argc, char* argv[])
 
 
 	//waiting for packet(ex: ping)....
-	sleep(1)
+	sleep(1);
 
 
 	while(1)
         {
-                res = pcap_next_ex(handle, &header, &r_packet);
+		int j;
+		const uint8_t* r_packet;
+		struct pcap_pkthdr* header;
+		struct ethhdr* r_ethhdr;
+                int res = pcap_next_ex(handle, &header, &r_packet);
                 if (res == 0) continue;
                 if (res == -1 || res == -2) break;
 
@@ -265,7 +273,7 @@ int main(int argc, char* argv[])
                 {
 			struct libnet_ipv4_hdr* r_ip_hdr;
 			r_ip_hdr = (struct libnet_ipv4_hdr*)(r_packet+14);
-			if(ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01 && memcmp(r_ip_hdr->ip_src, sin->sin_addr, 16))
+			if(r_ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01 && memcmp(&r_ip_hdr->ip_src, &sin->sin_addr, 16))
 			{
 				//change mac
 				memcpy(r_ethhdr->ether_shost, mymac, 6*sizeof(uint8_t));
@@ -284,7 +292,7 @@ int main(int argc, char* argv[])
 		else if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
 		{
 			//arp request(broadcast) from sender
-			if(!memcmp(r_ethhdr->ether_shosts_mac, s_mac))
+			if(!memcmp(r_ethhdr->ether_shost, s_mac, 6*sizeof(uint8_t)))
 			{
 				//send fake arp reply to sender
 				if(pcap_sendpacket(handle, fake_packet, size))
