@@ -1,7 +1,7 @@
-all : send_arp
+all : arp_spoof
 
-send_arp: main.o
-	g++ -g -o arp_spoof main.o -lpcap
+arp_spoof: main.o
+	g++ -g -o arp_spoof main.o -pthread -lpcap
 
 main.o:
 	g++ -g -c -o main.o main.c

